@@ -137,6 +137,30 @@ model's minimum cacheable prefix (1024 tokens on `claude-sonnet-5`); the
 summary prompt alone is ~250 tokens, which is below the floor and would never
 produce a cache hit regardless of whether caching is wired correctly.
 
+Last run against `claude-sonnet-5`:
+
+```
+Criterion 3 — complete() round-trips a real prompt
+PASS  round trip returned 4 chars
+      response: 'PONG'
+
+Criterion 4 — prompt caching on repeated calls
+      system prompt ~1250 tokens (minimum 1024)
+      call 1: cache_creation_input_tokens=1765
+      call 2: cache_read_input_tokens=1765
+PASS  second call read 1765 tokens from cache
+```
+
+Written and read counts match exactly, so the full cached prefix was reused
+rather than partially invalidated between calls.
+
+The script's own `~1250 tokens` line is the `len/4` estimate from
+`normalize.estimate_tokens`; the API billed 1765 for the same text. That gap
+is expected — `len/4` is the spec's rough heuristic and undercounts against
+the real tokenizer. It is fine for the chunking threshold, which only needs to
+be approximately right, but don't read `token_estimate` as a billing figure.
+For accurate counts use `client.messages.count_tokens()`.
+
 ## Acceptance criteria
 
 | Criterion | Status | Verified by |
@@ -144,6 +168,6 @@ produce a cache hit regardless of whether caching is wired correctly.
 | Ingest a PDF, DOCX, and plain-text meeting transcript without errors | ✅ | CLI against real files, plus `.vtt` and prose `.txt` |
 | Ingested documents persist to SQLite and are retrievable by id | ✅ | Round trip preserves speaker turns, timestamps, `created_at` |
 | `ClaudeClient.complete()` round-trips a prompt with a real API key | ✅ | `scripts/validate_live.py` |
-| Prompt caching applied to the system prompt on repeated calls | ✅ | `scripts/validate_live.py`, via `usage.cache_read_input_tokens` |
+| Prompt caching applied to the system prompt on repeated calls | ✅ | `scripts/validate_live.py` — call 1 wrote 1765 tokens, call 2 read 1765 back |
 | Over-threshold documents chunked on speaker/paragraph boundaries; under-threshold passed whole | ✅ | 1248-token transcript → 11 chunks, split only at speaker turns |
 | Unit tests cover each loader and the normalize function | ✅ | 215 tests |
