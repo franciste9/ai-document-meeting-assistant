@@ -136,3 +136,14 @@ and `cache_read_input_tokens`. Note the script pads the system prompt past the
 model's minimum cacheable prefix (1024 tokens on `claude-sonnet-5`); the
 summary prompt alone is ~250 tokens, which is below the floor and would never
 produce a cache hit regardless of whether caching is wired correctly.
+
+## Acceptance criteria
+
+| Criterion | Status | Verified by |
+| --------- | ------ | ----------- |
+| Ingest a PDF, DOCX, and plain-text meeting transcript without errors | ✅ | CLI against real files, plus `.vtt` and prose `.txt` |
+| Ingested documents persist to SQLite and are retrievable by id | ✅ | Round trip preserves speaker turns, timestamps, `created_at` |
+| `ClaudeClient.complete()` round-trips a prompt with a real API key | ✅ | `scripts/validate_live.py` |
+| Prompt caching applied to the system prompt on repeated calls | ✅ | `scripts/validate_live.py`, via `usage.cache_read_input_tokens` |
+| Over-threshold documents chunked on speaker/paragraph boundaries; under-threshold passed whole | ✅ | 1248-token transcript → 11 chunks, split only at speaker turns |
+| Unit tests cover each loader and the normalize function | ✅ | 215 tests |
