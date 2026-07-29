@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from reportlab.pdfgen import canvas
 
 from assistant import config, store
-from assistant.api import app, get_summarizer
+from assistant.api import app, get_max_upload_bytes, get_summarizer
 from assistant.errors import AssistantError
 from assistant.models import Document
 
@@ -245,6 +245,32 @@ class TestCreateDocument:
         client.post("/documents", files=txt_upload())
 
         assert list(spool.iterdir()) == []
+
+
+class TestMaxUploadBytes:
+    """The limit lives in api.py — it's an HTTP concern, not a CLI one."""
+
+    def test_defaults_to_five_megabytes(self, monkeypatch):
+        monkeypatch.delenv("MAX_UPLOAD_BYTES", raising=False)
+        assert get_max_upload_bytes() == 5_000_000
+
+    def test_env_var_overrides_the_default(self, monkeypatch):
+        monkeypatch.setenv("MAX_UPLOAD_BYTES", "12345")
+        assert get_max_upload_bytes() == 12345
+
+    def test_blank_env_var_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("MAX_UPLOAD_BYTES", "   ")
+        assert get_max_upload_bytes() == 5_000_000
+
+    def test_non_integer_env_var_raises(self, monkeypatch):
+        monkeypatch.setenv("MAX_UPLOAD_BYTES", "five megabytes")
+        with pytest.raises(AssistantError, match="must be an integer"):
+            get_max_upload_bytes()
+
+    def test_config_does_not_own_the_limit(self):
+        """Regression: the constant was moved out of config.py deliberately."""
+        assert not hasattr(config, "get_max_upload_bytes")
+        assert not hasattr(config, "DEFAULT_MAX_UPLOAD_BYTES")
 
 
 class TestUploadSizeLimit:

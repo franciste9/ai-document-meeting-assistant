@@ -13,6 +13,7 @@ The interactive Swagger UI at /docs is the interface for this pass.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from typing import Annotated, Any
@@ -20,7 +21,7 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
-from assistant import config, store
+from assistant import store
 from assistant.api_models import (
     DocumentDetailOut,
     DocumentOut,
@@ -36,10 +37,30 @@ from assistant.models import Document
 # must keep the original suffix or detection fails.
 SUPPORTED_SUFFIXES = frozenset({".pdf", ".docx", ".txt", ".md", ".vtt", ".srt"})
 
+# Largest upload accepted, in bytes (~5MB). Anything larger gets a 413.
+# Lives here rather than in config.py because it is an HTTP-layer concern —
+# nothing in the CLI or ingestion path has a notion of an upload size. Override
+# with the MAX_UPLOAD_BYTES env var.
+DEFAULT_MAX_UPLOAD_BYTES = 5_000_000
+
 # Read uploads in chunks so the size cap can trip before the whole body is in
 # memory. A flat `await file.read()` would buffer the entire upload first,
 # which defeats the point of having a cap.
 _UPLOAD_CHUNK_BYTES = 64 * 1024
+
+
+def get_max_upload_bytes() -> int:
+    """Largest upload accepted, in bytes. Reads MAX_UPLOAD_BYTES from the env."""
+    raw = os.getenv("MAX_UPLOAD_BYTES")
+    if raw is None or not raw.strip():
+        return DEFAULT_MAX_UPLOAD_BYTES
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise AssistantError(
+            f"MAX_UPLOAD_BYTES must be an integer, got {raw!r}"
+        ) from exc
+
 
 app = FastAPI(
     title="Document/Meeting Assistant",
@@ -147,7 +168,7 @@ async def create_document(
             ),
         )
 
-    max_bytes = config.get_max_upload_bytes()
+    max_bytes = get_max_upload_bytes()
     temp_path = await _spool_upload(file, file.filename or "", suffix, max_bytes)
 
     try:

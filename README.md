@@ -116,7 +116,7 @@ Set in `.env` (see `.env.example`):
 | `CLAUDE_MODEL`          | `claude-sonnet-5`  | Model for all completions |
 | `CHUNK_TOKEN_THRESHOLD` | `150000`           | Above this, documents are chunked |
 | `ASSISTANT_DB_PATH`     | `assistant.db`     | SQLite location |
-| `MAX_UPLOAD_BYTES`      | `5000000`          | Uploads above this get a `413` |
+| `MAX_UPLOAD_BYTES`      | `5000000` (~5MB)   | Uploads above this get a `413`. Read by `api.py`, not `config.py` — nothing outside the HTTP layer has a notion of upload size. |
 
 ## Design notes
 
