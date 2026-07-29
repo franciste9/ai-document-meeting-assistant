@@ -4,8 +4,9 @@ Ingests documents (PDF, DOCX, meeting transcripts, plain text), normalizes them,
 and sends them to the Claude API to produce structured output — summaries,
 decisions, and action items with owners.
 
-**Scope of this pass:** SDK wiring + document ingestion. No UI, no vector
-search, no deployment.
+**Scope of this pass:** SDK wiring, document ingestion, and an HTTP wrapper.
+The interactive Swagger UI at `/docs` is the interface — there's no hand-built
+frontend. No vector search, no auth.
 
 ## Setup
 
@@ -18,6 +19,27 @@ cp .env.example .env   # then add your ANTHROPIC_API_KEY
 ```
 
 ## Usage
+
+### HTTP API
+
+```bash
+uvicorn assistant.api:app --reload
+```
+
+Then open **http://127.0.0.1:8000/docs** — the Swagger UI is fully interactive:
+upload a file, list what's stored, and summarize it without writing any code.
+
+| Route | Purpose |
+| ----- | ------- |
+| `GET /health` | Liveness probe |
+| `POST /documents` | Upload and ingest a file (multipart, field name `file`) |
+| `GET /documents` | List ingested documents |
+| `GET /documents/{id}` | One document's metadata plus a ~500-char preview |
+| `POST /documents/{id}/summarize` | Summary, decisions, and action items |
+
+Summarizing requires `ANTHROPIC_API_KEY`; ingesting and listing don't.
+
+### CLI
 
 ```bash
 # Ingest a document — prints the new id and token estimate
@@ -65,6 +87,25 @@ Transcript parsing recognizes `[00:12:03] Alex: ...`, `00:12:03 Alex: ...`, and
 bare `Alex: ...`, plus WebVTT `<v Alex>` voice spans. A file with no speaker
 markers falls back to a single unattributed block.
 
+## Deployment
+
+```bash
+docker build -t doc-assistant .
+docker run -p 8080:8080 -e ANTHROPIC_API_KEY=sk-ant-... doc-assistant
+```
+
+Then open http://localhost:8080/docs.
+
+The Dockerfile is deliberately platform-agnostic — Render, Fly.io, Railway, and
+Cloud Run all accept a Dockerfile directly, so pick whichever has the fastest
+free-tier setup rather than committing to one vendor's config format.
+
+> **Storage is ephemeral.** SQLite lives on the container's local filesystem,
+> which most free-tier hosts wipe on redeploy or restart. Documents ingested in
+> one session may not survive into the next. That's an accepted limitation for
+> a demo — a reviewer ingests and summarizes in one sitting — not a bug to fix
+> with a managed database.
+
 ## Configuration
 
 Set in `.env` (see `.env.example`):
@@ -75,6 +116,7 @@ Set in `.env` (see `.env.example`):
 | `CLAUDE_MODEL`          | `claude-sonnet-5`  | Model for all completions |
 | `CHUNK_TOKEN_THRESHOLD` | `150000`           | Above this, documents are chunked |
 | `ASSISTANT_DB_PATH`     | `assistant.db`     | SQLite location |
+| `MAX_UPLOAD_BYTES`      | `5000000`          | Uploads above this get a `413` |
 
 ## Design notes
 
@@ -99,6 +141,8 @@ and jitter; 4xx responses are not retried.
 
 ```
 assistant/
+  api.py                # FastAPI routes — thin layer over main.py and store.py
+  api_models.py         # HTTP request/response schemas
   client.py             # Anthropic SDK wrapper: retry, caching, error wrapping
   config.py             # env loading, model constant, thresholds
   errors.py             # AssistantError
@@ -111,8 +155,15 @@ assistant/
     transcripts.py      # speaker/timestamp-aware parsing
   prompts/
     meeting_summary.py  # system prompt templates
+Dockerfile
 tests/
 ```
+
+`api.py` calls the same `ingest_file`, `summarize_document`, and `store`
+functions the CLI does — the HTTP layer adds routing and validation, not logic.
+`api_models.py` is kept separate from `models.py` on purpose: those are the
+persistence models, these are the wire contract, and they should be free to
+change independently.
 
 ## Tests
 
@@ -120,7 +171,8 @@ tests/
 python -m pytest tests/ -q
 ```
 
-215 tests, no network calls — the Anthropic client is faked throughout.
+268 tests, no network calls — the Anthropic client is faked throughout, and the
+API tests override the summarize dependency with the same pattern.
 
 ### Live API validation
 
@@ -162,6 +214,23 @@ be approximately right, but don't read `token_estimate` as a billing figure.
 For accurate counts use `client.messages.count_tokens()`.
 
 ## Acceptance criteria
+
+### HTTP wrapper
+
+| Criterion | Status | Verified by |
+| --------- | ------ | ----------- |
+| `GET /health` returns 200 | ✅ | `tests/test_api.py`, plus live `curl` |
+| `POST /documents` ingests a real upload and returns metadata | ✅ | `.pdf`, `.docx`, `.txt`, `.vtt` all covered |
+| `GET /documents` lists ingested documents | ✅ | `tests/test_api.py` |
+| `GET /documents/{id}` returns metadata; `404` on unknown id | ✅ | `tests/test_api.py`, plus live `curl` |
+| `POST /documents/{id}/summarize` returns parsed summary/decisions/action items | ✅ | `tests/test_api.py` with a faked client |
+| Uploads over `MAX_UPLOAD_BYTES` return `413` | ✅ | Live: an 8MB upload returned `413`, not a silent accept |
+| `/docs` is interactive end-to-end | ✅ | Swagger UI served; full upload → summarize round trip |
+| App runs from the Dockerfile on the configured port | ⚠️ | `uvicorn assistant.api:app` verified directly; **image build not run — no Docker in the dev environment** |
+| CLI behavior unchanged | ✅ | Output byte-identical before and after |
+| All 215 existing tests still pass unmodified | ✅ | 268 total = 215 existing + 53 new |
+
+### Core assistant
 
 | Criterion | Status | Verified by |
 | --------- | ------ | ----------- |

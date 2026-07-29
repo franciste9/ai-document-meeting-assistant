@@ -33,6 +33,10 @@ MAX_TOKENS = 8_192
 # Path to the local SQLite database.
 DB_PATH = os.getenv("ASSISTANT_DB_PATH", "assistant.db")
 
+# Largest upload the HTTP layer will accept, in bytes (~5MB). Anything larger
+# is rejected with 413.
+DEFAULT_MAX_UPLOAD_BYTES = 5_000_000
+
 
 def _int_from_env(name: str, default: int) -> int:
     """Read an int env var, falling back to `default` when unset or blank."""
@@ -55,6 +59,11 @@ def get_chunk_token_threshold() -> int:
 def get_model() -> str:
     """The model name for all completions."""
     return os.getenv("CLAUDE_MODEL", DEFAULT_MODEL)
+
+
+def get_max_upload_bytes() -> int:
+    """Largest upload the HTTP layer accepts, in bytes."""
+    return _int_from_env("MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
 
 
 def get_api_key() -> str:

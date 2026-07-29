@@ -1,0 +1,16 @@
+# Don't bake the dev venv, a stale local DB, or secrets into the image.
+.venv/
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+tests/
+scripts/
+assistant.db
+*.db
+.pytest_cache/
+.env
+README.md
+*.md
+Dockerfile
+.dockerignore
