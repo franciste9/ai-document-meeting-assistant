@@ -91,10 +91,14 @@ markers falls back to a single unattributed block.
 
 ```bash
 docker build -t doc-assistant .
-docker run -p 8080:8080 -e ANTHROPIC_API_KEY=sk-ant-... doc-assistant
+docker run -p 8080:8080 --env-file .env doc-assistant
 ```
 
-Then open http://localhost:8080/docs.
+Then open http://localhost:8080/docs. The image is ~300MB and runs as a
+non-root user.
+
+`--env-file .env` keeps the key out of your shell history; `-e
+ANTHROPIC_API_KEY=sk-ant-...` works too if you'd rather pass it inline.
 
 The Dockerfile is deliberately platform-agnostic — Render, Fly.io, Railway, and
 Cloud Run all accept a Dockerfile directly, so pick whichever has the fastest
@@ -226,7 +230,7 @@ For accurate counts use `client.messages.count_tokens()`.
 | `POST /documents/{id}/summarize` returns parsed summary/decisions/action items | ✅ | `tests/test_api.py` with a faked client |
 | Uploads over `MAX_UPLOAD_BYTES` return `413` | ✅ | Live: an 8MB upload returned `413`, not a silent accept |
 | `/docs` is interactive end-to-end | ✅ | Swagger UI served; full upload → summarize round trip |
-| App runs from the Dockerfile on the configured port | ⚠️ | `uvicorn assistant.api:app` verified directly; **image build not run — no Docker in the dev environment** |
+| App runs from the Dockerfile on the configured port | ✅ | Image built and run; all routes exercised inside the container |
 | CLI behavior unchanged | ✅ | Output byte-identical before and after |
 | All 215 existing tests still pass unmodified | ✅ | 268 total = 215 existing + 53 new |
 
