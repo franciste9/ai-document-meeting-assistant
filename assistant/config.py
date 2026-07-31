@@ -57,6 +57,18 @@ def get_model() -> str:
     return os.getenv("CLAUDE_MODEL", DEFAULT_MODEL)
 
 
+def get_api_token() -> str | None:
+    """The inbound API token, or None if auth is disabled (unset).
+
+    Distinct from `get_api_key()`: that is the outbound Anthropic credential,
+    this gates inbound calls to our own HTTP routes. Returning None when unset
+    is load-bearing — it keeps local dev and the existing test suite running
+    without a token, and the gate activates the moment the env var is set.
+    """
+    token = os.getenv("ASSISTANT_API_TOKEN")
+    return token.strip() if token and token.strip() else None
+
+
 def get_api_key() -> str:
     """The Anthropic API key, or raise if it isn't configured."""
     key = os.getenv("ANTHROPIC_API_KEY")

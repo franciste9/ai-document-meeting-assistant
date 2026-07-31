@@ -19,9 +19,10 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from assistant import store
+from assistant.api_auth import require_auth
 from assistant.api_models import (
     DocumentDetailOut,
     DocumentOut,
@@ -30,7 +31,7 @@ from assistant.api_models import (
     SummaryOut,
 )
 from assistant.errors import AssistantError
-from assistant.main import ingest_file, summarize_document
+from assistant.main import ingest_file, summarize_document, summarize_document_stream
 from assistant.models import Document
 
 # Extensions `loaders.detect_format` knows how to dispatch on. The temp file
@@ -143,7 +144,9 @@ async def health() -> HealthOut:
     response_model=DocumentOut,
     status_code=status.HTTP_201_CREATED,
     tags=["documents"],
+    dependencies=[Depends(require_auth)],
     responses={
+        401: {"model": ErrorOut, "description": "Missing or invalid API token"},
         413: {"model": ErrorOut, "description": "Upload exceeds the size limit"},
         415: {"model": ErrorOut, "description": "Unsupported file type"},
         502: {"model": ErrorOut, "description": "Ingestion failed"},
@@ -275,7 +278,9 @@ async def get_document(doc_id: int) -> DocumentDetailOut:
     "/documents/{doc_id}/summarize",
     response_model=SummaryOut,
     tags=["documents"],
+    dependencies=[Depends(require_auth)],
     responses={
+        401: {"model": ErrorOut, "description": "Missing or invalid API token"},
         404: {"model": ErrorOut, "description": "No document with that id"},
         502: {
             "model": ErrorOut,
@@ -312,3 +317,47 @@ async def summarize(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Model returned JSON in an unexpected shape: {raw!r}",
         ) from exc
+
+
+@app.post(
+    "/documents/{doc_id}/summarize/stream",
+    tags=["documents"],
+    dependencies=[Depends(require_auth)],
+    responses={
+        200: {
+            "content": {"text/plain": {}},
+            "description": "Summary text, streamed as it is generated",
+        },
+        401: {"model": ErrorOut, "description": "Missing or invalid API token"},
+        404: {"model": ErrorOut, "description": "No document with that id"},
+    },
+)
+async def summarize_stream(doc_id: int) -> StreamingResponse:
+    """Summarize a document, streaming the text as it is generated.
+
+    Returns `text/plain`, not JSON: a response body cannot be validated while
+    it is still arriving. Small documents stream directly; larger ones emit a
+    `[summarizing chunk N of M]` progress line per chunk and then stream the
+    merged result.
+
+    Callers needing a validated `SummaryOut` should use
+    `POST /documents/{doc_id}/summarize` instead, or accumulate this stream and
+    parse it client-side.
+
+    Note: Swagger's "Try it out" panel buffers the whole body before rendering,
+    so the incremental effect is only visible to a streaming client such as
+    `curl -N`.
+    """
+    document = _load_document(doc_id)
+
+    def generate():
+        # Once the first chunk is sent the status line is already 200, so a
+        # later failure cannot become a 502. Surface it in-band instead of
+        # dropping the connection and leaving the client with a silently
+        # truncated summary.
+        try:
+            yield from summarize_document_stream(document)
+        except AssistantError as exc:
+            yield f"\n[error: {exc}]\n"
+
+    return StreamingResponse(generate(), media_type="text/plain")

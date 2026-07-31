@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 from assistant import config, orchestration, store
@@ -63,6 +64,21 @@ def summarize_document(
     )
 
 
+def summarize_document_stream(
+    document: Document,
+    client=None,
+    threshold: int | None = None,
+) -> Iterator[str]:
+    """Stream a summary incrementally instead of returning it all at once.
+
+    Same pairing as `summarize_document` → `summarize_via_graph`: this is the
+    stable entrypoint, the pipeline lives in `orchestration.py`.
+    """
+    return orchestration.summarize_via_graph_stream(
+        document, client=client, threshold=threshold
+    )
+
+
 def _pretty_print_result(raw: str) -> None:
     """Print the model's JSON, re-indented when it parses cleanly."""
     try:
@@ -91,6 +107,16 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
 def _cmd_summarize(args: argparse.Namespace) -> int:
     document = store.get_document(args.id, db_path=args.db)
+
+    if args.stream:
+        # Raw text, not pretty-printed: there is no complete JSON to reformat
+        # until the stream ends, and buffering to reformat would defeat the
+        # point of --stream.
+        for chunk in summarize_document_stream(document):
+            print(chunk, end="", flush=True)
+        print()
+        return 0
+
     _pretty_print_result(summarize_document(document))
     return 0
 
@@ -127,6 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
         "summarize", help="Summarize a stored document by id."
     )
     summarize.add_argument("--id", type=int, required=True, help="Document id")
+    summarize.add_argument(
+        "--stream",
+        action="store_true",
+        help="Print the summary incrementally as it arrives (raw text, not JSON)",
+    )
     summarize.set_defaults(func=_cmd_summarize)
 
     listing = subcommands.add_parser("list", help="List stored documents.")

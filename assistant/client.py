@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import anthropic
@@ -90,6 +91,41 @@ class ClaudeClient:
             request["system"] = _build_system(system, cache=cache_system)
 
         return self._send_with_retry(request, stream=stream)
+
+    def complete_stream(
+        self,
+        messages: list[dict],
+        system: str | list[dict] | None = None,
+        max_tokens: int = config.MAX_TOKENS,
+        cache_system: bool = True,
+    ) -> Iterator[str]:
+        """Yield text deltas as they arrive from the API.
+
+        Unlike `complete()`, this does not retry. A transient failure before or
+        during the stream surfaces immediately as an AssistantError — once
+        partial output may have already reached a caller (over HTTP or to a
+        terminal), silently retrying from scratch would mean re-sending output
+        that was already shown. That is a deliberate trade-off, not an
+        oversight.
+        """
+        request: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        }
+
+        if system is not None:
+            request["system"] = _build_system(system, cache=cache_system)
+
+        try:
+            with self._client.messages.stream(**request) as stream:
+                yield from stream.text_stream
+        except anthropic.APIStatusError as exc:
+            raise AssistantError(
+                f"Anthropic API error ({exc.status_code}): {exc}"
+            ) from exc
+        except anthropic.AnthropicError as exc:
+            raise AssistantError(f"Anthropic SDK error: {exc}") from exc
 
     # -- internals -----------------------------------------------------------
 
