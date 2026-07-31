@@ -11,18 +11,11 @@ import json
 import sys
 from pathlib import Path
 
-from assistant import config, store
+from assistant import config, orchestration, store
 from assistant.errors import AssistantError
 from assistant.ingestion import loaders
 from assistant.ingestion.normalize import chunk_document, normalize
 from assistant.models import Document, IngestResult
-from assistant.prompts.meeting_summary import (
-    MERGE_SYSTEM_PROMPT,
-    SUMMARY_SYSTEM_PROMPT,
-    build_chunk_messages,
-    build_merge_messages,
-    build_summary_messages,
-)
 
 _LOADERS = {
     "pdf": loaders.load_pdf,
@@ -61,35 +54,12 @@ def summarize_document(
     """Build the prompt, call Claude, and return the structured JSON result.
 
     Documents over the token threshold are analyzed chunk-by-chunk and merged;
-    documents under it are sent whole.
+    documents under it are sent whole. The branching itself lives in
+    `orchestration.py` as an explicit graph; this is the stable entrypoint the
+    CLI and the HTTP routes both call.
     """
-    # Imported lazily so `ingest` works without an API key configured.
-    if client is None:
-        from assistant.client import ClaudeClient
-
-        client = ClaudeClient()
-
-    if threshold is None:
-        threshold = config.get_chunk_token_threshold()
-
-    if document.token_estimate <= threshold:
-        return client.complete(
-            messages=build_summary_messages(document),
-            system=SUMMARY_SYSTEM_PROMPT,
-        )
-
-    chunks = chunk_document(document, max_tokens=threshold)
-    partials = [
-        client.complete(
-            messages=build_chunk_messages(chunk, i + 1, len(chunks)),
-            system=SUMMARY_SYSTEM_PROMPT,
-        )
-        for i, chunk in enumerate(chunks)
-    ]
-
-    return client.complete(
-        messages=build_merge_messages(partials),
-        system=MERGE_SYSTEM_PROMPT,
+    return orchestration.summarize_via_graph(
+        document, client=client, threshold=threshold
     )
 
 

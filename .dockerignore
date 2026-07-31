@@ -1,7 +1,7 @@
 # Don't bake the dev venv, a stale local DB, or secrets into the image.
 .venv/
-__pycache__/
-*.py[cod]
+**/__pycache__/
+**/*.py[cod]
 .git/
 .gitignore
 tests/
@@ -14,3 +14,9 @@ README.md
 *.md
 Dockerfile
 .dockerignore
+
+# OS cruft — COPY would otherwise bake these into the image.
+# `**/` is required: a bare `.DS_Store` only matches the context root, not
+# nested ones like assistant/.DS_Store.
+**/.DS_Store
+**/._*

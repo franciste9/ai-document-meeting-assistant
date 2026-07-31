@@ -130,6 +130,21 @@ speaker-turn boundaries (or paragraph boundaries for non-transcripts) with
 ~500 tokens of overlap, each chunk is analyzed, and the partial results are
 merged in a final call.
 
+**Orchestration.** That branching is a LangGraph `StateGraph` in
+`orchestration.py` rather than inline `if`/`else` — see
+[docs/summarization-graph.md](docs/summarization-graph.md) for the diagram.
+The graph normalizes its own output: both system prompts forbid code fences,
+but the model wraps the merge response in ```` ```json ```` often enough to
+matter (3 of 4 identical runs), which turned a correct answer into a `502`
+from the HTTP layer. Stripping happens once in the graph so every caller gets
+parseable JSON, rather than each consumer re-implementing the same guard.
+The payoff is inspectability: the pipeline is an artifact you can render and
+point at, and adding a step (a verification pass, a retry node) means adding a
+node rather than threading another branch through a function. The cost is real
+and worth naming — LangGraph pulls in ~19 transitive packages for a pipeline
+whose control flow fits in 20 lines of Python. At this size it's a bet on where
+the pipeline is going, not a simplification of where it is.
+
 **Prompt caching.** The system prompt is frozen — no timestamps or per-request
 interpolation — and carries a `cache_control` breakpoint, so repeated calls
 aren't re-billed for those tokens. Static document content passed as system
@@ -147,6 +162,7 @@ and jitter; 4xx responses are not retried.
 assistant/
   api.py                # FastAPI routes — thin layer over main.py and store.py
   api_models.py         # HTTP request/response schemas
+  orchestration.py      # LangGraph StateGraph for the summarization pipeline
   client.py             # Anthropic SDK wrapper: retry, caching, error wrapping
   config.py             # env loading, model constant, thresholds
   errors.py             # AssistantError
