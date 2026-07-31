@@ -16,6 +16,7 @@ from where they already live.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -205,6 +206,64 @@ def summarize_via_graph(
     )
 
     return final_state["result"]
+
+
+def summarize_via_graph_stream(
+    document: Document,
+    client: Any | None = None,
+    threshold: int | None = None,
+) -> Iterator[str]:
+    """As `summarize_via_graph`, but yields incrementally.
+
+    The whole-document path streams directly. The chunk-and-merge path yields a
+    short progress line per chunk — those calls stay non-streamed — and streams
+    only the final merge step.
+
+    Deliberately a parallel path rather than a streaming mode on the compiled
+    graph: threading incremental yields through LangGraph's node/state model
+    would add real complexity for no benefit, since the goal here is progress
+    visibility, not different branching.
+
+    Output is raw text. Unlike the non-streaming path there is no
+    `_strip_code_fence` pass — you cannot strip a fence you have not finished
+    receiving. A caller that needs parseable JSON should accumulate the stream
+    and strip client-side, or call the non-streaming path instead.
+    """
+    # Imported lazily so `ingest` still works without an API key configured.
+    if client is None:
+        from assistant.client import ClaudeClient
+
+        client = ClaudeClient()
+
+    if threshold is None:
+        threshold = config.get_chunk_token_threshold()
+
+    # Same routing rule as `_route`, kept in sync deliberately.
+    if document.token_estimate <= threshold:
+        yield from client.complete_stream(
+            messages=build_summary_messages(document),
+            system=SUMMARY_SYSTEM_PROMPT,
+        )
+        return
+
+    chunks = chunk_document(document, max_tokens=threshold)
+    partials: list[str] = []
+
+    for index, chunk in enumerate(chunks):
+        yield f"[summarizing chunk {index + 1} of {len(chunks)}]\n"
+        partials.append(
+            _strip_code_fence(
+                client.complete(
+                    messages=build_chunk_messages(chunk, index + 1, len(chunks)),
+                    system=SUMMARY_SYSTEM_PROMPT,
+                )
+            )
+        )
+
+    yield from client.complete_stream(
+        messages=build_merge_messages(partials),
+        system=MERGE_SYSTEM_PROMPT,
+    )
 
 
 def draw_mermaid() -> str:

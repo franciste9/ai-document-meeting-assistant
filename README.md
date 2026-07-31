@@ -31,13 +31,44 @@ upload a file, list what's stored, and summarize it without writing any code.
 
 | Route | Purpose |
 | ----- | ------- |
-| `GET /health` | Liveness probe |
-| `POST /documents` | Upload and ingest a file (multipart, field name `file`) |
-| `GET /documents` | List ingested documents |
-| `GET /documents/{id}` | One document's metadata plus a ~500-char preview |
-| `POST /documents/{id}/summarize` | Summary, decisions, and action items |
+| Route | Purpose | Auth |
+| ----- | ------- | ---- |
+| `GET /health` | Liveness probe | open |
+| `POST /documents` | Upload and ingest a file (multipart, field name `file`) | 🔒 |
+| `GET /documents` | List ingested documents | open |
+| `GET /documents/{id}` | One document's metadata plus a ~500-char preview | open |
+| `POST /documents/{id}/summarize` | Summary, decisions, and action items | 🔒 |
+| `POST /documents/{id}/summarize/stream` | Same, streamed as `text/plain` | 🔒 |
 
 Summarizing requires `ANTHROPIC_API_KEY`; ingesting and listing don't.
+
+**Auth.** Routes marked 🔒 cost money to call, so they sit behind a shared
+bearer token. With `ASSISTANT_API_TOKEN` unset — the local and test default —
+the gate is a no-op and everything stays open. Set it and those routes start
+returning `401` without `Authorization: Bearer <token>`. Read-only routes and
+`/docs` stay open either way, so Swagger remains browsable.
+
+```bash
+curl -H "Authorization: Bearer $ASSISTANT_API_TOKEN" \
+     -F "file=@notes.txt" http://localhost:8000/documents
+```
+
+**Streaming.** `/summarize/stream` returns text as it is generated rather than
+one complete body. Small documents stream directly; larger ones emit a
+`[summarizing chunk N of M]` line per chunk, then stream the merged result.
+
+```bash
+curl -N -X POST http://localhost:8000/documents/1/summarize/stream
+```
+
+The response is raw `text/plain`, not a validated `SummaryOut` — a body can't
+be validated while it's still arriving. For typed output use the non-streaming
+route, or accumulate the stream and parse it client-side.
+
+> Swagger's "Try it out" panel buffers the whole response before rendering, so
+> the incremental effect isn't visible there. Use `curl -N` or the CLI's
+> `--stream` flag to actually see it. That's a limitation of the Swagger UI,
+> not of the route.
 
 ### CLI
 
@@ -48,9 +79,16 @@ python -m assistant.main ingest ./meeting_notes.pdf
 # Summarize a stored document by id — prints structured JSON
 python -m assistant.main summarize --id 3
 
+# Same, but print incrementally as the model generates it
+python -m assistant.main summarize --id 3 --stream
+
 # List what's been ingested
 python -m assistant.main list
 ```
+
+`--stream` prints raw text rather than pretty-printed JSON: there's no complete
+document to reformat until the stream ends, and buffering to reformat would
+defeat the point. Omit the flag for formatted output.
 
 Both commands accept `--db PATH` to point at a different SQLite file
 (default: `assistant.db`, overridable via `ASSISTANT_DB_PATH`).
@@ -110,6 +148,53 @@ free-tier setup rather than committing to one vendor's config format.
 > a demo — a reviewer ingests and summarizes in one sitting — not a bug to fix
 > with a managed database.
 
+### Going public
+
+**1. Generate a token.** Use a CSPRNG — not a password generator, not something
+memorable:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+That's ~256 bits, URL-safe. `openssl rand -base64 32` works too.
+
+**2. Set both secrets on the host.** Neither belongs in the image or the repo —
+`.env` is for local use only:
+
+| Host | How |
+| ---- | --- |
+| Render | Dashboard → Environment → Add Environment Variable |
+| Fly.io | `fly secrets set ASSISTANT_API_TOKEN=... ANTHROPIC_API_KEY=...` |
+| Railway | Variables tab |
+| Cloud Run | `--set-env-vars`, or Secret Manager |
+
+**3. Verify the gate is actually on.** This step matters more than it looks:
+setting the env var *is* the activation mechanism, so a typo in the variable
+**name** fails open silently — the routes stay wide open and nothing errors.
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" -X POST \
+  https://your-app.example.com/documents/1/summarize
+# expect: 401
+```
+
+Anything other than `401` means the token isn't being read. Check that first,
+before assuming the deploy succeeded.
+
+**Rotating the token requires a restart.** `get_api_token()` is read per
+request, but the process only sees the environment it was started with. Change
+the value on the host and redeploy; there's no live swap.
+
+> **What this token does and doesn't protect.** One shared token means everyone
+> you give it to has full access, and revoking it revokes everyone — the right
+> scope for a demo, and explicitly all this pass sets out to do. But if the
+> token leaks (a Slack paste, a terminal screenshot), someone can spend your
+> Anthropic credits until you notice and redeploy. If the URL goes wider than a
+> handful of reviewers, the next safeguard isn't more auth — it's a spending cap
+> on the Anthropic side, since that's the failure mode that actually costs
+> money.
+
 ## Configuration
 
 Set in `.env` (see `.env.example`):
@@ -121,6 +206,7 @@ Set in `.env` (see `.env.example`):
 | `CHUNK_TOKEN_THRESHOLD` | `150000`           | Above this, documents are chunked |
 | `ASSISTANT_DB_PATH`     | `assistant.db`     | SQLite location |
 | `MAX_UPLOAD_BYTES`      | `5000000` (~5MB)   | Uploads above this get a `413`. Read by `api.py`, not `config.py` — nothing outside the HTTP layer has a notion of upload size. |
+| `ASSISTANT_API_TOKEN`   | unset              | Bearer token for the API's cost-incurring routes. Unset disables the gate; set it before deploying publicly. Does not affect the CLI. |
 
 ## Design notes
 
@@ -156,11 +242,26 @@ the CLI prints a message rather than a traceback. Rate limits, connection
 errors, and 5xx responses are retried up to 3 times with exponential backoff
 and jitter; 4xx responses are not retried.
 
+**Streaming deliberately doesn't retry.** `complete_stream()` makes a single
+attempt. Once partial output has reached a terminal or an HTTP client, retrying
+from scratch would re-send text the caller already saw — worse than failing
+visibly. For the same reason a failure *after* the first byte can't become a
+`502`: the status line is already sent, so the streaming route appends an
+`[error: ...]` line to the body instead of dropping the connection silently.
+
+**Only two calls stream.** The whole-document path streams, and so does the
+final merge on the chunk-and-merge path. Per-chunk calls stay synchronous
+behind progress lines — streaming every intermediate call adds real complexity
+for the same perceived responsiveness. The streaming path is a parallel
+implementation rather than a mode on the compiled graph, since threading
+incremental yields through LangGraph's state model would buy nothing here.
+
 ## Layout
 
 ```
 assistant/
   api.py                # FastAPI routes — thin layer over main.py and store.py
+  api_auth.py           # Shared bearer-token gate for cost-incurring routes
   api_models.py         # HTTP request/response schemas
   orchestration.py      # LangGraph StateGraph for the summarization pipeline
   client.py             # Anthropic SDK wrapper: retry, caching, error wrapping
